@@ -13,7 +13,10 @@ func (h *Inbound) UpdateUsers(users []option.Hysteria2User) error {
 		userNameList = append(userNameList, user.Name)
 		userPasswordList = append(userPasswordList, user.Password)
 	}
+	// Publish the name list before the authenticator starts handing out the
+	// matching indices, otherwise an incoming connection authenticated against
+	// the new user set can observe the previous, shorter list.
+	h.userNameList.Store(&userNameList)
 	h.service.UpdateUsers(userList, userPasswordList)
-	h.userNameList = userNameList
 	return nil
 }

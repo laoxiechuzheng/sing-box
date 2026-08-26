@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"sync/atomic"
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -35,7 +36,19 @@ type Inbound struct {
 	listener     *listener.Listener
 	tlsConfig    tls.ServerConfig
 	service      *hysteria2.Service[int]
-	userNameList []string
+	userNameList atomic.Pointer[[]string]
+}
+
+// userName resolves a user name by the index-based user ID produced by the
+// authenticator. The user list can be replaced at runtime by UpdateUsers, so
+// the ID may refer to an entry that is not present in the snapshot observed
+// here. Callers must tolerate an empty result instead of indexing directly.
+func (h *Inbound) userName(userID int) string {
+	nameList := h.userNameList.Load()
+	if nameList == nil || userID < 0 || userID >= len(*nameList) {
+		return ""
+	}
+	return (*nameList)[userID]
 }
 
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.Hysteria2InboundOptions) (adapter.Inbound, error) {
@@ -137,9 +150,9 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		userNameList = append(userNameList, user.Name)
 		userPasswordList = append(userPasswordList, user.Password)
 	}
+	inbound.userNameList.Store(&userNameList)
 	service.UpdateUsers(userList, userPasswordList)
 	inbound.service = service
-	inbound.userNameList = userNameList
 	return inbound, nil
 }
 
@@ -156,7 +169,7 @@ func (h *Inbound) NewConnectionEx(ctx context.Context, conn net.Conn, source M.S
 	metadata.Destination = destination
 	h.logger.InfoContext(ctx, "inbound connection from ", metadata.Source)
 	userID, _ := auth.UserFromContext[int](ctx)
-	if userName := h.userNameList[userID]; userName != "" {
+	if userName := h.userName(userID); userName != "" {
 		metadata.User = userName
 		h.logger.InfoContext(ctx, "[", userName, "] inbound connection to ", metadata.Destination)
 	} else {
@@ -178,7 +191,7 @@ func (h *Inbound) NewPacketConnectionEx(ctx context.Context, conn N.PacketConn, 
 	metadata.Destination = destination
 	h.logger.InfoContext(ctx, "inbound packet connection from ", metadata.Source)
 	userID, _ := auth.UserFromContext[int](ctx)
-	if userName := h.userNameList[userID]; userName != "" {
+	if userName := h.userName(userID); userName != "" {
 		metadata.User = userName
 		h.logger.InfoContext(ctx, "[", userName, "] inbound packet connection to ", metadata.Destination)
 	} else {
