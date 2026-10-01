@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/inbound"
@@ -22,6 +23,7 @@ import (
 
 	anytls "github.com/anytls/sing-anytls"
 	"github.com/anytls/sing-anytls/padding"
+	"github.com/pires/go-proxyproto"
 )
 
 func RegisterInbound(registry *inbound.Registry) {
@@ -30,18 +32,22 @@ func RegisterInbound(registry *inbound.Registry) {
 
 type Inbound struct {
 	inbound.Adapter
-	tlsConfig tls.ServerConfig
-	router    adapter.ConnectionRouterEx
-	logger    logger.ContextLogger
-	listener  *listener.Listener
-	service   *anytls.Service
+	tlsConfig                   tls.ServerConfig
+	router                      adapter.ConnectionRouterEx
+	logger                      logger.ContextLogger
+	listener                    *listener.Listener
+	service                     *anytls.Service
+	proxyProtocol               bool
+	proxyProtocolAcceptNoHeader bool
 }
 
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.AnyTLSInboundOptions) (adapter.Inbound, error) {
 	inbound := &Inbound{
-		Adapter: inbound.NewAdapter(C.TypeAnyTLS, tag),
-		router:  uot.NewRouter(router, logger),
-		logger:  logger,
+		Adapter:                     inbound.NewAdapter(C.TypeAnyTLS, tag),
+		router:                      uot.NewRouter(router, logger),
+		logger:                      logger,
+		proxyProtocol:               options.ProxyProtocol || options.ProxyProtocolAcceptNoHeader,
+		proxyProtocolAcceptNoHeader: options.ProxyProtocolAcceptNoHeader,
 	}
 
 	if options.TLS != nil && options.TLS.Enabled {
@@ -69,11 +75,15 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		return nil, err
 	}
 	inbound.service = service
+	// Only AnyTLS handles these flags; other protocol listeners still reject them.
+	listenOptions := options.ListenOptions
+	listenOptions.ProxyProtocol = false
+	listenOptions.ProxyProtocolAcceptNoHeader = false
 	inbound.listener = listener.New(listener.Options{
 		Context:           ctx,
 		Logger:            logger,
 		Network:           []string{N.NetworkTCP},
-		Listen:            options.ListenOptions,
+		Listen:            listenOptions,
 		ConnectionHandler: inbound,
 	})
 	return inbound, nil
@@ -97,6 +107,32 @@ func (h *Inbound) Close() error {
 }
 
 func (h *Inbound) NewConnectionEx(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) {
+	if h.proxyProtocol {
+		policy := proxyproto.REQUIRE
+		if h.proxyProtocolAcceptNoHeader {
+			policy = proxyproto.USE
+		}
+		// Use a connection deadline: the parser treats its own timeout as no header.
+		proxyConn := proxyproto.NewConn(conn, proxyproto.WithPolicy(policy), proxyproto.SetReadHeaderTimeout(0), proxyproto.ValidateHeader(validateProxyProtocolHeader))
+		deadline := time.Now().Add(10 * time.Second)
+		if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+			deadline = contextDeadline
+		}
+		err := proxyConn.SetReadDeadline(deadline)
+		if err == nil {
+			_, err = proxyConn.Read(nil)
+		}
+		if err == nil {
+			err = proxyConn.SetReadDeadline(time.Time{})
+		}
+		if err != nil {
+			N.CloseOnHandshakeFailure(proxyConn, onClose, err)
+			h.logger.ErrorContext(ctx, E.Cause(err, "process connection from ", metadata.Source, ": PROXY protocol header"))
+			return
+		}
+		conn = proxyConn
+		metadata.Source = M.SocksaddrFromNet(proxyConn.RemoteAddr()).Unwrap()
+	}
 	if h.tlsConfig != nil {
 		tlsConn, err := tls.ServerHandshake(ctx, conn, h.tlsConfig)
 		if err != nil {
@@ -111,6 +147,20 @@ func (h *Inbound) NewConnectionEx(ctx context.Context, conn net.Conn, metadata a
 		N.CloseOnHandshakeFailure(conn, onClose, err)
 		h.logger.ErrorContext(ctx, E.Cause(err, "process connection from ", metadata.Source))
 	}
+}
+
+func validateProxyProtocolHeader(header *proxyproto.Header) error {
+	if header.Command.IsLocal() {
+		return nil
+	}
+	protocol := header.TransportProtocol
+	if !protocol.IsStream() || (!protocol.IsIPv4() && !protocol.IsIPv6()) {
+		return E.New("unsupported PROXY protocol transport")
+	}
+	if !M.SocksaddrFromNet(header.SourceAddr).Addr.IsValid() {
+		return E.New("invalid PROXY protocol source address")
+	}
+	return nil
 }
 
 type inboundHandler Inbound
