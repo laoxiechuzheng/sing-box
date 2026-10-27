@@ -34,6 +34,7 @@ icon: material/new-box
 {
   "enabled": true,
   "server_name": "",
+  "server_name_allowlist": [],
   "alpn": [],
   "min_version": "",
   "max_version": "",
@@ -185,6 +186,16 @@ Do not send server name in ClientHello.
 Used to verify the hostname on the returned certificates unless insecure is given.
 
 It is also included in the client's handshake to support virtual hosting unless it is an IP address.
+
+#### server_name_allowlist
+
+==Server only==
+
+Server names (SNI) accepted by the server. Not supported with reality.
+
+When set, a ClientHello whose server name is missing or not listed is rejected before any certificate is sent,
+regardless of whether the client verifies certificates. Names match case-insensitively; `*.example.com` matches
+any subdomain of `example.com` but not `example.com` itself.
 
 #### insecure
 

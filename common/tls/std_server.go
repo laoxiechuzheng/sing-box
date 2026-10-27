@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -216,9 +217,12 @@ func NewSTDServer(ctx context.Context, logger log.ContextLogger, options option.
 	if !options.Enabled {
 		return nil, nil
 	}
+	serverNameAllowlist, err := newServerNameAllowlist(options.ServerNameAllowlist)
+	if err != nil {
+		return nil, err
+	}
 	var tlsConfig *tls.Config
 	var acmeService adapter.SimpleLifecycle
-	var err error
 	if options.ACME != nil && len(options.ACME.Domain) > 0 {
 		//nolint:staticcheck
 		tlsConfig, acmeService, err = startACME(ctx, logger, common.PtrValueOrDefault(options.ACME))
@@ -369,6 +373,11 @@ func NewSTDServer(ctx context.Context, logger log.ContextLogger, options option.
 		echKeyPath:            echKeyPath,
 	}
 	serverConfig.config.GetConfigForClient = func(info *tls.ClientHelloInfo) (*tls.Config, error) {
+		// Reject before any certificate is selected, so a client that skips
+		// certificate verification still cannot complete the handshake.
+		if serverNameAllowlist != nil && !serverNameAllowlist.allows(info.ServerName) {
+			return nil, E.New("server name not allowed: ", strconv.Quote(info.ServerName))
+		}
 		serverConfig.access.Lock()
 		defer serverConfig.access.Unlock()
 		return serverConfig.config, nil

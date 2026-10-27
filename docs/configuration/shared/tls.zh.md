@@ -34,6 +34,7 @@ icon: material/new-box
 {
   "enabled": true,
   "server_name": "",
+  "server_name_allowlist": [],
   "alpn": [],
   "min_version": "",
   "max_version": "",
@@ -185,6 +186,15 @@ TLS 版本值：
 用于验证返回证书上的主机名，除非设置不安全。
 
 它还包含在 ClientHello 中以支持虚拟主机，除非它是 IP 地址。
+
+#### server_name_allowlist
+
+==仅服务器==
+
+服务器接受的服务器名称（SNI）。不支持 reality。
+
+设置后，ClientHello 中缺少服务器名称或名称不在列表中的连接会在发送证书之前被拒绝，与客户端是否校验证书无关。
+名称匹配不区分大小写；`*.example.com` 匹配 `example.com` 的任意子域名，但不匹配 `example.com` 本身。
 
 #### insecure
 

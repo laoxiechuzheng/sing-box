@@ -9,6 +9,7 @@ import (
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
+	E "github.com/sagernet/sing/common/exceptions"
 	aTLS "github.com/sagernet/sing/common/tls"
 )
 
@@ -40,6 +41,9 @@ func NewServerWithOptions(options ServerOptions) (ServerConfig, error) {
 		options.Logger.Warn("enabling kTLS RX will definitely reduce performance, please checkout https://sing-box.sagernet.org/configuration/shared/tls/#kernel_rx")
 	}
 	if options.Options.Reality != nil && options.Options.Reality.Enabled {
+		if len(options.Options.ServerNameAllowlist) > 0 {
+			return nil, E.New("server_name_allowlist is not supported with reality")
+		}
 		return NewRealityServer(options.Context, options.Logger, options.Options)
 	}
 	return NewSTDServer(options.Context, options.Logger, options.Options)
